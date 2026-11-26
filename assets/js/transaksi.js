@@ -1,6 +1,7 @@
 /**
- * KasKu — Transaksi (Tambah & Tampil)
- * Day 8 (24 November 2026) + Day 9 (25 November 2026)
+ * KasKu — Transaksi (Tambah, Tampil & Edit)
+ * Day 8 (24 November 2026) + Day 9 (25 November 2026) +
+ * Day 10 (26 November 2026)
  *
  * Day 8 — fungsi tambah transaksi di sisi UI: validasi input, lalu
  * memasukkan transaksi baru ke daftar yang sedang dipakai
@@ -15,6 +16,15 @@
  * (semua teks pengguna di-escape). Dipakai halaman utama
  * (index.html) dan form tambah (Day 18) untuk menampilkan
  * daftar setelah transaksi ditambah.
+ *
+ * Day 10 — fungsi edit transaksi: ubah sebagian field transaksi
+ * yang sudah ada (field yang tidak disertakan dipertahankan),
+ * lalu gabungannya divalidasi ulang seluruhnya — termasuk
+ * kecocokan tipe dengan kategori barunya. `id` dan
+ * `created_at` dipertahankan; `updated_at` diperbarui hanya
+ * bila benar-benar ada yang berubah. Id yang tidak ditemukan
+ * melempar ErrorTransaksiTidakDitemukan. Ini pasangan
+ * JavaScript dari Transaksi::update() di model PHP (Day 7).
  *
  * Aturan yang ditegakkan di sini (lihat docs/day-02-struktur-data.md):
  * - `jumlah` wajib diisi, angka, lebih dari 0, maksimal
@@ -32,14 +42,15 @@
  * Day 2 dan data contoh Day 5: kategori disematkan di dalam
  * tiap transaksi, `jumlah` selalu positif.
  *
- * Dipakai oleh: assets/js/form.js (Day 18, form tambah transaksi).
- * Daftar ditampilkan di bawah ini (Day 9); edit di Day 10, hapus
- * di Day 11; filter di assets/js/filter.js (Day 12-13), saldo di
- * assets/js/saldo.js (Day 14). Data bertahan ke backend lewat
+ * Dipakai oleh: assets/js/form.js (Day 18, form tambah & edit
+ * transaksi). Daftar ditampilkan di bawah ini (Day 9) dan
+ * diedit di Day 10; hapus di Day 11; filter di
+ * assets/js/filter.js (Day 12-13), saldo di assets/js/saldo.js
+ * (Day 14). Data bertahan ke backend lewat
  * backend/controllers/TransaksiController.php (Day 23-24).
  *
  * ES module tanpa dependensi selain format.js dan data.js:
- *   import { tambahTransaksi, renderDaftarTransaksi } from './transaksi.js';
+ *   import { tambahTransaksi, editTransaksi, renderDaftarTransaksi } from './transaksi.js';
  */
 
 import {
@@ -70,8 +81,9 @@ export const MAKSIMAL_DESKRIPSI = 255;
 /* ------------------------------------------------------------------ */
 
 /**
- * Galat yang dilempar `tambahTransaksi()` (dan `buatStore().tambah()`)
- * bila input tidak lolos validasi. `errors` berisi satu entri per
+ * Galat yang dilempar `tambahTransaksi()` dan `editTransaksi()`
+ * (serta `buatStore().tambah()` / `.edit()`) bila input tidak
+ * lolos validasi. `errors` berisi satu entri per
  * field yang bermasalah, supaya form (Day 18) bisa menampilkan
  * pesan di samping field yang salah, bukan satu pesan umum.
  *
@@ -436,6 +448,178 @@ export function tambahTransaksi(daftar, data, opsi = {}) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Edit transaksi (Day 10)                                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Galat yang dilempar `editTransaksi()` (dan `buatStore().edit()`)
+ * bila id yang mau diubah tidak ada di daftar. Dibedakan dari
+ * `ErrorValidasiTransaksi` karena penyebabnya bukan isian form,
+ * melainkan transaksi yang sudah tidak ada — mis. daftar sudah
+ * berubah sejak barisnya ditampilkan. Pasangan JavaScript dari
+ * InvalidArgumentException "Transaksi id ... tidak ditemukan"
+ * di model PHP (Day 7).
+ */
+export class ErrorTransaksiTidakDitemukan extends Error {
+  /**
+   * @param {unknown} id id yang dicari.
+   */
+  constructor(id) {
+    super(`Transaksi id ${id} tidak ditemukan.`);
+    this.name = 'ErrorTransaksiTidakDitemukan';
+    this.id = id;
+  }
+}
+
+/**
+ * Cari satu transaksi berdasarkan id.
+ *
+ * Id boleh berupa teks (mis. dari atribut `data-id` baris
+ * daftar) — diubah ke angka dulu sebelum dicocokkan.
+ *
+ * @param {Array<object>} daftar
+ * @param {number|string} id
+ * @returns {object|null} transaksi, atau null bila tidak ada
+ *   (termasuk bila id bukan bilangan bulat positif).
+ */
+export function cariTransaksi(daftar, id) {
+  const idAngka = Number(id);
+  if (!Number.isInteger(idAngka) || idAngka <= 0) {
+    return null;
+  }
+  return daftar.find((t) => t.id === idAngka) || null;
+}
+
+/**
+ * Siapkan isian form edit dari transaksi yang sudah ada —
+ * kebalikan arah dari `normalisasiTransaksi()`: `catatan` null
+ * menjadi teks kosong supaya field form tidak menampilkan
+ * "null". Dipakai form edit (Day 18) saat pengguna menekan
+ * tombol edit pada satu baris daftar.
+ *
+ * @param {object} transaksi
+ * @returns {{kategori_id: number, tipe: string, jumlah: number, tanggal: string, deskripsi: string, catatan: string}}
+ */
+export function siapkanDataEdit(transaksi) {
+  return {
+    kategori_id: transaksi.kategori_id,
+    tipe: transaksi.tipe,
+    jumlah: transaksi.jumlah,
+    tanggal: transaksi.tanggal,
+    deskripsi: transaksi.deskripsi,
+    catatan: transaksi.catatan ?? '',
+  };
+}
+
+/**
+ * Ubah satu transaksi yang sudah ada di daftar.
+ *
+ * Pola yang sama dengan `Transaksi::update()` di model PHP
+ * (Day 7): field yang tidak disertakan di `data` dipertahankan
+ * dari transaksi lama, lalu gabungannya divalidasi ulang
+ * seluruhnya — termasuk kecocokan `tipe` dengan kategori
+ * barunya. Jadi mengganti kategori saja ke kategori bertipe
+ * lain akan ditolak sampai `tipe`-nya ikut diganti.
+ *
+ * Hanya enam field isian yang boleh diubah (kategori_id, tipe,
+ * jumlah, tanggal, deskripsi, catatan); `id` dan `created_at`
+ * selalu dipertahankan, `updated_at` diperbarui. Mengosongkan
+ * `catatan` ('' atau null) menghapus catatan; mengosongkan
+ * `tanggal` berarti hari ini, sama seperti saat menambah.
+ *
+ * Daftar lama TIDAK diubah — dikembalikan daftar baru dengan
+ * transaksi hasil edit di posisi yang sama. Bila hasil edit
+ * ternyata sama persis dengan data lama, tidak ada yang
+ * berubah: daftar asal dikembalikan apa adanya,
+ * `berubah: false`, dan `updated_at` tidak disentuh (sama
+ * seperti UPDATE MySQL yang tidak mengubah baris apa pun).
+ *
+ * @param {Array<object>} daftar daftar transaksi yang sudah ada.
+ * @param {number|string} id id transaksi yang diubah.
+ * @param {object} [data] field yang diubah; field lain
+ *   dipertahankan dari transaksi lama.
+ * @param {object} [opsi]
+ * @param {Array<object>} [opsi.kategori] daftar kategori yang dipakai.
+ * @returns {{daftar: Array<object>, transaksi: object, sebelumnya: object, berubah: boolean}}
+ *   daftar baru, transaksi hasil edit, transaksi sebelum edit
+ *   (untuk pesan "diubah dari ..." / undo), dan penanda apakah
+ *   ada field yang benar-benar berubah.
+ * @throws {ErrorTransaksiTidakDitemukan} bila id tidak ada di daftar.
+ * @throws {ErrorValidasiTransaksi} bila gabungan data tidak valid.
+ *
+ * @example
+ *   const { daftar, transaksi, berubah } = editTransaksi(daftarLama, 1, {
+ *     jumlah: '30.000',
+ *   });
+ *   // transaksi.jumlah === 30000, field lain sama dengan semula
+ *   // berubah === true; daftarLama[0].jumlah tetap 25000
+ */
+export function editTransaksi(daftar, id, data = {}, opsi = {}) {
+  const lama = cariTransaksi(daftar, id);
+  if (lama === null) {
+    throw new ErrorTransaksiTidakDitemukan(id);
+  }
+
+  const kategori = opsi.kategori ?? KATEGORI_DEFAULT;
+  const input = data ?? {};
+
+  // Gabungkan: field yang disertakan (bukan undefined) menimpa
+  // data lama; field di luar daftar ini diabaikan.
+  const gabungan = {
+    kategori_id:
+      input.kategori_id !== undefined ? input.kategori_id : lama.kategori_id,
+    tipe: input.tipe !== undefined ? input.tipe : lama.tipe,
+    jumlah: input.jumlah !== undefined ? input.jumlah : lama.jumlah,
+    tanggal: input.tanggal !== undefined ? input.tanggal : lama.tanggal,
+    deskripsi:
+      input.deskripsi !== undefined ? input.deskripsi : lama.deskripsi,
+    catatan: input.catatan !== undefined ? input.catatan : lama.catatan,
+  };
+
+  const errors = validasiTransaksi(gabungan, { kategori });
+  if (errors.length > 0) {
+    throw new ErrorValidasiTransaksi(errors);
+  }
+
+  const normal = normalisasiTransaksi(gabungan);
+
+  const berubah =
+    normal.kategori_id !== lama.kategori_id ||
+    normal.tipe !== lama.tipe ||
+    normal.jumlah !== lama.jumlah ||
+    normal.tanggal !== lama.tanggal ||
+    normal.deskripsi !== lama.deskripsi ||
+    normal.catatan !== (lama.catatan ?? null);
+
+  if (!berubah) {
+    return { daftar, transaksi: lama, sebelumnya: lama, berubah: false };
+  }
+
+  const kategoriDipilih =
+    kategori.find((k) => k.id === normal.kategori_id) ??
+    getKategoriById(normal.kategori_id);
+
+  const transaksi = {
+    ...lama,
+    kategori_id: normal.kategori_id,
+    kategori: { ...kategoriDipilih },
+    tipe: normal.tipe,
+    jumlah: normal.jumlah,
+    tanggal: normal.tanggal,
+    deskripsi: normal.deskripsi,
+    catatan: normal.catatan,
+    updated_at: waktuSekarangWIB(),
+  };
+
+  return {
+    daftar: daftar.map((t) => (t.id === lama.id ? transaksi : t)),
+    transaksi,
+    sebelumnya: lama,
+    berubah: true,
+  };
+}
+
+/* ------------------------------------------------------------------ */
 /* Tampil daftar transaksi (Day 9)                                      */
 /* ------------------------------------------------------------------ */
 
@@ -749,7 +933,7 @@ export function renderDaftarTransaksi(daftar, opsi = {}) {
  * `getTransaksiContoh()` dari data.js saat pengembangan.
  *
  * @param {Array<object>} [transaksiAwal=[]] isi awal store.
- * @returns {{tambah: Function, semua: Function, cari: Function, jumlah: Function, tampilkan: Function}}
+ * @returns {{tambah: Function, edit: Function, semua: Function, cari: Function, jumlah: Function, tampilkan: Function}}
  *
  * @example
  *   import { getTransaksiContoh } from './data.js';
@@ -760,6 +944,8 @@ export function renderDaftarTransaksi(daftar, opsi = {}) {
  *   });
  *   store.jumlah(); // 19
  *   store.tampilkan()[0].deskripsi; // 'Bonus proyek' (terbaru dulu)
+ *   const diubah = store.edit(baru.id, { jumlah: 550000 });
+ *   diubah.jumlah; // 550000
  */
 export function buatStore(transaksiAwal = []) {
   let daftar = [...transaksiAwal];
@@ -772,6 +958,19 @@ export function buatStore(transaksiAwal = []) {
      */
     tambah(data, opsi = {}) {
       const hasil = tambahTransaksi(daftar, data, opsi);
+      daftar = hasil.daftar;
+      return hasil.transaksi;
+    },
+
+    /**
+     * Ubah transaksi yang sudah ada di store (Day 10).
+     * Field yang tidak disertakan dipertahankan dari data lama.
+     * @returns {object} transaksi hasil edit.
+     * @throws {ErrorTransaksiTidakDitemukan} bila id tidak ada.
+     * @throws {ErrorValidasiTransaksi} bila hasil gabungan tidak valid.
+     */
+    edit(id, data, opsi = {}) {
+      const hasil = editTransaksi(daftar, id, data, opsi);
       daftar = hasil.daftar;
       return hasil.transaksi;
     },
@@ -798,13 +997,14 @@ export function buatStore(transaksiAwal = []) {
     },
 
     /**
-     * Satu transaksi berdasarkan id.
+     * Satu transaksi berdasarkan id (id boleh berupa teks,
+     * mis. dari atribut `data-id` baris daftar).
      *
-     * @param {number} id
+     * @param {number|string} id
      * @returns {object|null}
      */
     cari(id) {
-      return daftar.find((t) => t.id === id) || null;
+      return cariTransaksi(daftar, id);
     },
 
     /** Jumlah transaksi di store. */
@@ -821,6 +1021,7 @@ export default {
   MAKSIMAL_DESKRIPSI,
   URUTAN_VALID,
   ErrorValidasiTransaksi,
+  ErrorTransaksiTidakDitemukan,
   validasiKategoriId,
   validasiTipe,
   validasiKesesuaianTipe,
@@ -834,6 +1035,9 @@ export default {
   waktuSekarangWIB,
   idBerikutnya,
   tambahTransaksi,
+  cariTransaksi,
+  siapkanDataEdit,
+  editTransaksi,
   urutkanTransaksi,
   kelompokkanPerTanggal,
   barisTransaksi,
