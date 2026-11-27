@@ -1,7 +1,7 @@
 /**
- * KasKu — Transaksi (Tambah, Tampil & Edit)
+ * KasKu — Transaksi (Tambah, Tampil, Edit & Hapus)
  * Day 8 (24 November 2026) + Day 9 (25 November 2026) +
- * Day 10 (26 November 2026)
+ * Day 10 (26 November 2026) + Day 11 (27 November 2026)
  *
  * Day 8 — fungsi tambah transaksi di sisi UI: validasi input, lalu
  * memasukkan transaksi baru ke daftar yang sedang dipakai
@@ -26,6 +26,16 @@
  * melempar ErrorTransaksiTidakDitemukan. Ini pasangan
  * JavaScript dari Transaksi::update() di model PHP (Day 7).
  *
+ * Day 11 — fungsi hapus transaksi + konfirmasi: transaksi hanya
+ * dihapus setelah pengguna mengonfirmasi (pesan konfirmasi
+ * menyebut deskripsi, jumlah, kategori, dan tanggalnya, supaya
+ * tidak salah hapus). Pembatalan tidak mengubah daftar sama
+ * sekali; penghapusan yang berhasil mengembalikan transaksi
+ * terhapus beserta indeksnya, sehingga UI bisa menawarkan
+ * "Urungkan" lewat `pulihkanTransaksi()`. Ini pasangan
+ * JavaScript dari Transaksi::delete() di model PHP (Day 7) —
+ * menghapus transaksi tidak memengaruhi kategorinya.
+ *
  * Aturan yang ditegakkan di sini (lihat docs/day-02-struktur-data.md):
  * - `jumlah` wajib diisi, angka, lebih dari 0, maksimal
  *   Rp999.999.999.999,99 (DECIMAL(15,2) di skema).
@@ -43,14 +53,14 @@
  * tiap transaksi, `jumlah` selalu positif.
  *
  * Dipakai oleh: assets/js/form.js (Day 18, form tambah & edit
- * transaksi). Daftar ditampilkan di bawah ini (Day 9) dan
- * diedit di Day 10; hapus di Day 11; filter di
+ * transaksi). Daftar ditampilkan di bawah ini (Day 9), diedit
+ * di Day 10, dan dihapus di Day 11; filter di
  * assets/js/filter.js (Day 12-13), saldo di assets/js/saldo.js
  * (Day 14). Data bertahan ke backend lewat
  * backend/controllers/TransaksiController.php (Day 23-24).
  *
  * ES module tanpa dependensi selain format.js dan data.js:
- *   import { tambahTransaksi, editTransaksi, renderDaftarTransaksi } from './transaksi.js';
+ *   import { tambahTransaksi, editTransaksi, hapusTransaksi, renderDaftarTransaksi } from './transaksi.js';
  */
 
 import {
@@ -452,8 +462,9 @@ export function tambahTransaksi(daftar, data, opsi = {}) {
 /* ------------------------------------------------------------------ */
 
 /**
- * Galat yang dilempar `editTransaksi()` (dan `buatStore().edit()`)
- * bila id yang mau diubah tidak ada di daftar. Dibedakan dari
+ * Galat yang dilempar `editTransaksi()` dan `hapusTransaksi()`
+ * (serta `buatStore().edit()` / `.hapus()`) bila id yang mau
+ * diubah/dihapus tidak ada di daftar. Dibedakan dari
  * `ErrorValidasiTransaksi` karena penyebabnya bukan isian form,
  * melainkan transaksi yang sudah tidak ada — mis. daftar sudah
  * berubah sejak barisnya ditampilkan. Pasangan JavaScript dari
@@ -616,6 +627,178 @@ export function editTransaksi(daftar, id, data = {}, opsi = {}) {
     transaksi,
     sebelumnya: lama,
     berubah: true,
+  };
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Hapus transaksi (Day 11)                                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Pesan konfirmasi sebelum satu transaksi dihapus. Menyebut
+ * deskripsi, jumlah bertanda, kategori, dan tanggalnya supaya
+ * pengguna yakin transaksi yang benar yang akan hilang —
+ * "Hapus transaksi ini?" saja terlalu mudah salah klik saat
+ * daftarnya panjang.
+ *
+ * @param {object} transaksi transaksi yang akan dihapus.
+ * @returns {string} contoh:
+ *   'Hapus "Makan siang di warteg" (-Rp25.000 · Makanan &
+ *   Minuman · 24 November 2026)? Transaksi yang dihapus tidak
+ *   dapat dikembalikan.'
+ */
+export function pesanKonfirmasiHapus(transaksi) {
+  const kategoriNama = transaksi.kategori?.nama ?? 'Tanpa kategori';
+  return (
+    `Hapus "${transaksi.deskripsi}" ` +
+    `(${formatRupiahDenganTanda(transaksi.jumlah, transaksi.tipe)} · ` +
+    `${kategoriNama} · ${formatTanggal(transaksi.tanggal)})? ` +
+    'Transaksi yang dihapus tidak dapat dikembalikan.'
+  );
+}
+
+/**
+ * Siapkan data untuk dialog konfirmasi hapus: transaksi yang
+ * dituju dan pesan siap tampil. Dipakai UI (Day 18) saat
+ * pengguna menekan tombol hapus pada satu baris daftar —
+ * dialog ditampilkan dulu, penghapusan baru dijalankan lewat
+ * `hapusTransaksi()` setelah pengguna menyetujui.
+ *
+ * @param {Array<object>} daftar
+ * @param {number|string} id id transaksi yang akan dihapus
+ *   (boleh teks, mis. dari atribut `data-hapus-id`).
+ * @returns {{transaksi: object, pesan: string}}
+ * @throws {ErrorTransaksiTidakDitemukan} bila id tidak ada di daftar.
+ */
+export function siapkanKonfirmasiHapus(daftar, id) {
+  const transaksi = cariTransaksi(daftar, id);
+  if (transaksi === null) {
+    throw new ErrorTransaksiTidakDitemukan(id);
+  }
+  return { transaksi, pesan: pesanKonfirmasiHapus(transaksi) };
+}
+
+/**
+ * Hapus satu transaksi dari daftar, setelah konfirmasi.
+ *
+ * Penghapusan bersifat merusak, jadi fungsi ini tidak pernah
+ * menghapus diam-diam: transaksi hanya dihapus bila
+ * `opsi.konfirmasi` bernilai `true`, atau berupa fungsi yang
+ * mengembalikan `true` saat dipanggil dengan
+ * `(transaksi, pesan)` — pola terakhir cocok untuk
+ * `window.confirm` maupun dialog buatan sendiri di UI, dan
+ * mudah diuji tanpa browser. Tanpa konfirmasi (atau fungsi
+ * konfirmasi mengembalikan `false`), daftar asal dikembalikan
+ * apa adanya dengan `dibatalkan: true`.
+ *
+ * Daftar lama TIDAK diubah — dikembalikan daftar baru tanpa
+ * transaksi tersebut (pola immutable yang sama dengan
+ * `tambahTransaksi()` / `editTransaksi()`). Transaksi yang
+ * terhapus dan indeks asalnya ikut dikembalikan supaya UI
+ * bisa menawarkan "Urungkan" lewat `pulihkanTransaksi()`.
+ * Menghapus transaksi tidak memengaruhi kategorinya — sama
+ * seperti `Transaksi::delete()` di model PHP (Day 7), hanya
+ * kategori yang dipakai transaksi yang dilindungi dari
+ * penghapusan, bukan sebaliknya.
+ *
+ * @param {Array<object>} daftar daftar transaksi yang sudah ada.
+ * @param {number|string} id id transaksi yang dihapus.
+ * @param {object} [opsi]
+ * @param {boolean|Function} [opsi.konfirmasi] `true`, atau
+ *   fungsi `(transaksi, pesan) => boolean`. Tanpa ini
+ *   penghapusan dibatalkan.
+ * @returns {{daftar: Array<object>, terhapus: object|null, indeks: number, dibatalkan: boolean}}
+ *   daftar baru, transaksi yang terhapus (null bila dibatalkan),
+ *   indeks asal transaksi itu (-1 bila dibatalkan), dan penanda
+ *   apakah penghapusan dibatalkan karena tidak dikonfirmasi.
+ * @throws {ErrorTransaksiTidakDitemukan} bila id tidak ada di daftar.
+ *
+ * @example
+ *   const hasil = hapusTransaksi(daftarLama, 1, {
+ *     konfirmasi: (t, pesan) => window.confirm(pesan),
+ *   });
+ *   if (!hasil.dibatalkan) {
+ *     // tampilkan toast "Transaksi dihapus" + tombol Urungkan:
+ *     // pulihkanTransaksi(hasil.daftar, hasil.terhapus, hasil.indeks)
+ *   }
+ */
+export function hapusTransaksi(daftar, id, opsi = {}) {
+  const transaksi = cariTransaksi(daftar, id);
+  if (transaksi === null) {
+    throw new ErrorTransaksiTidakDitemukan(id);
+  }
+
+  const konfirmasi = opsi.konfirmasi;
+  const disetujui =
+    typeof konfirmasi === 'function'
+      ? konfirmasi(transaksi, pesanKonfirmasiHapus(transaksi)) === true
+      : konfirmasi === true;
+
+  if (!disetujui) {
+    return { daftar, terhapus: null, indeks: -1, dibatalkan: true };
+  }
+
+  const indeks = daftar.findIndex((t) => t.id === transaksi.id);
+  return {
+    daftar: daftar.filter((t) => t.id !== transaksi.id),
+    terhapus: transaksi,
+    indeks,
+    dibatalkan: false,
+  };
+}
+
+/**
+ * Pulihkan transaksi yang baru dihapus — pasangan "Urungkan"
+ * dari `hapusTransaksi()`. Transaksi dimasukkan kembali di
+ * indeks asalnya (dibatasi ke rentang daftar saat ini), dengan
+ * id dan seluruh field apa adanya, sehingga urutan daftar
+ * kembali seperti sebelum penghapusan.
+ *
+ * Bila id transaksi itu ternyata sudah ada di daftar (mis.
+ * tombol Urungkan ditekan dua kali, atau transaksi sudah
+ * dipulihkan dari jalur lain), daftar dikembalikan apa adanya
+ * dengan `dipulihkan: false` — bukan galat, supaya UI tidak
+ * perlu menangani pengecualian untuk klik ganda.
+ *
+ * Daftar lama TIDAK diubah.
+ *
+ * @param {Array<object>} daftar
+ * @param {object} transaksi transaksi hasil `hapusTransaksi().terhapus`.
+ * @param {number} [indeks] indeks asal dari `hapusTransaksi().indeks`;
+ *   tanpa ini transaksi ditambahkan di akhir daftar.
+ * @returns {{daftar: Array<object>, transaksi: object, dipulihkan: boolean}}
+ * @throws {TypeError} bila `transaksi` bukan objek ber-id valid.
+ */
+export function pulihkanTransaksi(daftar, transaksi, indeks) {
+  if (
+    transaksi === null ||
+    typeof transaksi !== 'object' ||
+    !Number.isInteger(Number(transaksi.id)) ||
+    Number(transaksi.id) <= 0
+  ) {
+    throw new TypeError(
+      'pulihkanTransaksi: transaksi harus objek dengan id bilangan bulat positif.',
+    );
+  }
+
+  if (cariTransaksi(daftar, transaksi.id) !== null) {
+    return { daftar, transaksi, dipulihkan: false };
+  }
+
+  const posisi =
+    indeks === undefined || indeks === null
+      ? daftar.length
+      : Math.min(Math.max(Math.floor(indeks) || 0, 0), daftar.length);
+
+  return {
+    daftar: [
+      ...daftar.slice(0, posisi),
+      transaksi,
+      ...daftar.slice(posisi),
+    ],
+    transaksi,
+    dipulihkan: true,
   };
 }
 
@@ -847,7 +1030,10 @@ export function escapeHtml(teks) {
 /**
  * Render satu transaksi menjadi satu baris daftar (`<li>`).
  * Kelas `transaksi-item--pemasukan` / `--pengeluaran` dipakai
- * style.css (Day 15-17) untuk warna jumlahnya.
+ * style.css (Day 15-17) untuk warna jumlahnya. Tombol hapus
+ * membawa `data-hapus-id` (Day 11) — UI menangkap kliknya,
+ * menampilkan konfirmasi dari `siapkanKonfirmasiHapus()`, lalu
+ * memanggil `hapusTransaksi()`.
  *
  * @param {object} transaksi
  * @param {object} [opsi] diteruskan ke `barisTransaksi()`.
@@ -872,6 +1058,9 @@ export function renderBarisTransaksi(transaksi, opsi = {}) {
     `${catatan}` +
     `</span>` +
     `<span class="transaksi-item__jumlah">${escapeHtml(baris.jumlahTeks)}</span>` +
+    `<button type="button" class="transaksi-item__hapus" ` +
+    `data-hapus-id="${baris.id}" ` +
+    `aria-label="Hapus transaksi ${escapeHtml(baris.deskripsi)}">Hapus</button>` +
     `</li>`
   );
 }
@@ -933,7 +1122,7 @@ export function renderDaftarTransaksi(daftar, opsi = {}) {
  * `getTransaksiContoh()` dari data.js saat pengembangan.
  *
  * @param {Array<object>} [transaksiAwal=[]] isi awal store.
- * @returns {{tambah: Function, edit: Function, semua: Function, cari: Function, jumlah: Function, tampilkan: Function}}
+ * @returns {{tambah: Function, edit: Function, hapus: Function, pulihkan: Function, semua: Function, cari: Function, jumlah: Function, tampilkan: Function}}
  *
  * @example
  *   import { getTransaksiContoh } from './data.js';
@@ -946,6 +1135,10 @@ export function renderDaftarTransaksi(daftar, opsi = {}) {
  *   store.tampilkan()[0].deskripsi; // 'Bonus proyek' (terbaru dulu)
  *   const diubah = store.edit(baru.id, { jumlah: 550000 });
  *   diubah.jumlah; // 550000
+ *   const hasilHapus = store.hapus(baru.id, { konfirmasi: true });
+ *   hasilHapus.dibatalkan; // false
+ *   store.pulihkan(hasilHapus.terhapus, hasilHapus.indeks);
+ *   store.jumlah(); // 19 (kembali seperti semula)
  */
 export function buatStore(transaksiAwal = []) {
   let daftar = [...transaksiAwal];
@@ -973,6 +1166,36 @@ export function buatStore(transaksiAwal = []) {
       const hasil = editTransaksi(daftar, id, data, opsi);
       daftar = hasil.daftar;
       return hasil.transaksi;
+    },
+
+    /**
+     * Hapus transaksi dari store setelah konfirmasi (Day 11).
+     * Tanpa `opsi.konfirmasi` yang menyetujui, tidak ada yang
+     * berubah dan hasilnya `dibatalkan: true`.
+     * @returns {{terhapus: object|null, indeks: number, dibatalkan: boolean}}
+     *   transaksi terhapus (untuk Urungkan), indeks asalnya,
+     *   dan penanda pembatalan.
+     * @throws {ErrorTransaksiTidakDitemukan} bila id tidak ada.
+     */
+    hapus(id, opsi = {}) {
+      const hasil = hapusTransaksi(daftar, id, opsi);
+      daftar = hasil.daftar;
+      return {
+        terhapus: hasil.terhapus,
+        indeks: hasil.indeks,
+        dibatalkan: hasil.dibatalkan,
+      };
+    },
+
+    /**
+     * Pulihkan transaksi yang baru dihapus dari store (Day 11)
+     * — pasangan Urungkan dari `hapus()`.
+     * @returns {{transaksi: object, dipulihkan: boolean}}
+     */
+    pulihkan(transaksi, indeks) {
+      const hasil = pulihkanTransaksi(daftar, transaksi, indeks);
+      daftar = hasil.daftar;
+      return { transaksi: hasil.transaksi, dipulihkan: hasil.dipulihkan };
     },
 
     /**
@@ -1038,6 +1261,10 @@ export default {
   cariTransaksi,
   siapkanDataEdit,
   editTransaksi,
+  pesanKonfirmasiHapus,
+  siapkanKonfirmasiHapus,
+  hapusTransaksi,
+  pulihkanTransaksi,
   urutkanTransaksi,
   kelompokkanPerTanggal,
   barisTransaksi,
